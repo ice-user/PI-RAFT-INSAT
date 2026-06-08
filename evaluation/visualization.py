@@ -3,13 +3,37 @@ import matplotlib.pyplot as plt
 import torch
 import xarray as xr
 
+
+def _prepare_flow_for_visualization(flow_pred):
+    """Normalize model flow output to a single [2, H, W] NumPy array."""
+    if isinstance(flow_pred, torch.Tensor):
+        flow_np = flow_pred.cpu().numpy()
+    else:
+        flow_np = np.asarray(flow_pred)
+
+    # Remove a leading batch dimension if present
+    if flow_np.ndim == 5 and flow_np.shape[0] == 1:
+        flow_np = flow_np[0]
+
+    # If the model returns a sequence of adjacent-pair flows [T-1, 2, H, W], average them
+    if flow_np.ndim == 4 and flow_np.shape[1] == 2:
+        flow_np = flow_np.mean(axis=0)
+
+    if flow_np.ndim != 3 or flow_np.shape[0] != 2:
+        raise ValueError(
+            f"Expected flow field shape [2,H,W] or [T-1,2,H,W], got {flow_np.shape}"
+        )
+
+    return flow_np
+
+
 def plot_untrained_baseline(img1, flow_pred, title="Cell 6: Untrained Baseline Flow Map (Random Initial State)", stride=16):
     """
     Plots the wind vector quiver field overlaid on the background imagery for untrained initial state.
     
     Args:
         img1 (torch.Tensor or np.ndarray): Background satellite image, shape [1, H, W] or [H, W]
-        flow_pred (torch.Tensor or np.ndarray): Predicted wind displacement field [u, v], shape [2, H, W]
+        flow_pred (torch.Tensor or np.ndarray): Predicted wind displacement field [u, v], shape [2, H, W] or [T-1, 2, H, W]
         title (str): Title of the plot.
         stride (int): Spatial stride interval to make quiver needles legible.
     """
@@ -22,10 +46,7 @@ def plot_untrained_baseline(img1, flow_pred, title="Cell 6: Untrained Baseline F
     else:
         img1_np = img1[0] if img1.ndim == 3 else img1
         
-    if isinstance(flow_pred, torch.Tensor):
-        flow_np = flow_pred.squeeze(0).cpu().numpy()
-    else:
-        flow_np = flow_pred.squeeze(0) if flow_pred.ndim == 4 else flow_pred
+    flow_np = _prepare_flow_for_visualization(flow_pred)
 
     u_val = flow_np[0]
     v_val = flow_np[1]
@@ -61,8 +82,8 @@ def plot_inference_scaling_comparison(img1, flow_low, flow_high, standard_iters=
     
     Args:
         img1 (torch.Tensor or np.ndarray): Background satellite image, shape [1, H, W] or [H, W]
-        flow_low (torch.Tensor or np.ndarray): Low resolution / low iteration flow, shape [2, H, W]
-        flow_high (torch.Tensor or np.ndarray): High resolution / high iteration flow, shape [2, H, W]
+        flow_low (torch.Tensor or np.ndarray): Low resolution / low iteration flow, shape [2, H, W] or [T-1, 2, H, W]
+        flow_high (torch.Tensor or np.ndarray): High resolution / high iteration flow, shape [2, H, W] or [T-1, 2, H, W]
         standard_iters (int): Number of standard iterations.
         production_iters (int): Number of production iterations.
         scale_factor (float): Vector arrow scaling factor.
@@ -75,15 +96,8 @@ def plot_inference_scaling_comparison(img1, flow_low, flow_high, standard_iters=
     else:
         img1_np = img1[0] if img1.ndim == 3 else img1
 
-    if isinstance(flow_low, torch.Tensor):
-        flow_low_np = flow_low.squeeze(0).cpu().numpy()
-    else:
-        flow_low_np = flow_low.squeeze(0) if flow_low.ndim == 4 else flow_low
-
-    if isinstance(flow_high, torch.Tensor):
-        flow_high_np = flow_high.squeeze(0).cpu().numpy()
-    else:
-        flow_high_np = flow_high.squeeze(0) if flow_high.ndim == 4 else flow_high
+    flow_low_np = _prepare_flow_for_visualization(flow_low)
+    flow_high_np = _prepare_flow_for_visualization(flow_high)
 
     u_low, v_low = flow_low_np[0], flow_low_np[1]
     mag_low = np.sqrt(u_low**2 + v_low**2)

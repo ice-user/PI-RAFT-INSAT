@@ -129,8 +129,11 @@ untrained_model.eval()
 with torch.no_grad():
     flow_pred, _ = untrained_model(images, dem, iters=4)
 
+# Average the sequence of adjacent-pair flow fields into one representative flow map
+flow_avg = flow_pred.mean(dim=1)
+
 # Render the baseline plot using the first frame from the temporal sequence
-plot_untrained_baseline(images[:, 0], flow_pred, title="Cell 6: Untrained Baseline Flow Map (Random Initial State)", stride=16)
+plot_untrained_baseline(images[:, 0], flow_avg, title="Cell 6: Untrained Baseline Flow Map (Random Initial State)", stride=16)
 
 print("Cell 6 visualization baseline successfully restored.")
 

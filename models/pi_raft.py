@@ -39,38 +39,40 @@ class PhysicsInformedRAFT(nn.Module):
         self.flow_head = nn.Conv2d(128, 2, kernel_size=3, padding=1)   # Outputs: [u, v]
         self.height_head = PressureHead(128, 1, kernel_size=3, padding=1) # Outputs: Pressure Height
 
-    def forward(self, image1, image2, dem, iters=4):
-        b, _, h, w = image1.shape
+    def forward(self, images, dem, iters=4):
+        b, t, c, h, w = images.shape
 
-        # Feature Extraction
-        f1 = self.feature_encoder(image1)
-        f2 = self.feature_encoder(image2)
-        
-        # TODO: scientific validation required
-        # Note: Summing satellite values and terrain elevations directly (image1 + dem) is a physical simplification.
-        c1 = self.context_encoder(image1 + dem)
+        # Feature extraction for every frame in the sequence
+        features = [self.feature_encoder(images[:, frame_idx]) for frame_idx in range(t)]
 
-        # Build 4D Correlation Memory Map
-        corr_volume = AllPairsCorrelationVolume(f1, f2)
-
-        # Initialize zero vectors at 1/8 tracking resolution
-        coords0 = torch.zeros(b, 2, h // 8, w // 8, device=image1.device)
-        coords1 = torch.zeros(b, 2, h // 8, w // 8, device=image1.device)
+        # Use the first frame and DEM as the initial context reference
+        c1 = self.context_encoder(images[:, 0] + dem)
         hidden_state = torch.tanh(c1)
 
-        # Iteration solver sequence
-        for _ in range(iters):
-            current_flow = coords1 - coords0
-            corr_features = corr_volume.lookup(coords1, radius=self.corr_radius)
+        flows = []
+        heights = []
+        for frame_idx in range(t - 1):
+            f1 = features[frame_idx]
+            f2 = features[frame_idx + 1]
+            corr_volume = AllPairsCorrelationVolume(f1, f2)
 
-            x = torch.cat([corr_features, current_flow], dim=1)
-            hidden_state = self.update_block(hidden_state, x)
+            coords0 = torch.zeros(b, 2, h // 8, w // 8, device=images.device)
+            coords1 = torch.zeros(b, 2, h // 8, w // 8, device=images.device)
 
-            delta_flow = self.flow_head(hidden_state)
-            coords1 = coords1 + delta_flow
+            for _ in range(iters):
+                current_flow = coords1 - coords0
+                corr_features = corr_volume.lookup(coords1, radius=self.corr_radius)
 
-        # Bilinear upsampling expansion to full resolution domain bounds
-        final_flow = F.interpolate(coords1 - coords0, size=(h, w), mode='bilinear', align_corners=True) * 8.0
-        final_height = F.interpolate(self.height_head(hidden_state), size=(h, w), mode='bilinear', align_corners=True)
+                x = torch.cat([corr_features, current_flow], dim=1)
+                hidden_state = self.update_block(hidden_state, x)
 
-        return final_flow, final_height
+                delta_flow = self.flow_head(hidden_state)
+                coords1 = coords1 + delta_flow
+
+            flow = F.interpolate(coords1 - coords0, size=(h, w), mode='bilinear', align_corners=True) * 8.0
+            height = F.interpolate(self.height_head(hidden_state), size=(h, w), mode='bilinear', align_corners=True)
+
+            flows.append(flow)
+            heights.append(height)
+
+        return torch.stack(flows, dim=1), torch.stack(heights, dim=1)

@@ -9,7 +9,7 @@ class INSAT3DSProxyDataset(Dataset):
     This class outlines the required API signatures, calibration parameters, and
     metadata mappings for IMAGER payload channels.
     """
-    def __init__(self, data_dir=None, band='WV', year=2024, day_of_year=120, hour=14):
+    def __init__(self, data_dir=None, band='WV', year=2024, day_of_year=120, hour=14, sequence_length=2):
         # TODO: scientific validation required
         # Deferred from audit phase: INSAT-3DS HDF5 pipeline construction
         self.data_dir = data_dir
@@ -17,6 +17,7 @@ class INSAT3DSProxyDataset(Dataset):
         self.year = year
         self.day_of_year = day_of_year
         self.hour = hour
+        self.sequence_length = sequence_length
         
         # In a real implementation, scan the data_dir for matching H5 files
         self.file_list = []
@@ -48,9 +49,8 @@ class INSAT3DSProxyDataset(Dataset):
 
     def __len__(self):
         # TODO: scientific validation required
-        return 0
+        return max(0, len(self.file_list) - self.sequence_length + 1)
 
     def __getitem__(self, idx):
         # TODO: scientific validation required
-        # Should return frame_t, frame_t_next, and topography DEM context
         raise NotImplementedError("INSAT-3DS loader dataset indexing is not active.")

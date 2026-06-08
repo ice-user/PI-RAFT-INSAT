@@ -23,6 +23,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import modular package classes
 from datasets import SatelliteDataset
+from models.feature_encoder import FeatureEncoder
+from models.convgru import ConvGRUCell
+from models.correlation import AllPairsCorrelationVolume
 from models import PhysicsInformedRAFT
 from losses import PhysicsInformedLoss
 from evaluation import (
@@ -80,7 +83,11 @@ hours_to_fetch = [14, 15, 16, 17]
 
 # Instantiating datasets via the new SatelliteDataset routing factory class
 hourly_datasets = [
-    SatelliteDataset(satellite='GOES16', product='ABI-L2-CMIPC', band='C09', year=2024, day_of_year=120, hour=h)
+    SatelliteDataset(
+        satellite='GOES16', product='ABI-L2-CMIPC', band='C09',
+        year=2024, day_of_year=120, hour=h,
+        sequence_length=4
+    )
     for h in hours_to_fetch
 ]
 
@@ -96,7 +103,11 @@ criterion = PhysicsInformedLoss(alpha=0.5, beta=0.1, gamma=0.01, epsilon=0.001)
 print("Sequential data engine ready with split metrics tracking.")
 
 print("Initializing unseen validation GOES-16 proxy data stream...")
-val_dataset = SatelliteDataset(satellite='GOES16', product='ABI-L2-CMIPC', band='C09', year=2024, day_of_year=120, hour=18)
+val_dataset = SatelliteDataset(
+    satellite='GOES16', product='ABI-L2-CMIPC', band='C09',
+    year=2024, day_of_year=120, hour=18,
+    sequence_length=4
+)
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
 print(f"Total validation tracking frames compiled: {len(val_dataset)}")
@@ -106,9 +117,8 @@ print("Train and Validation streaming contexts successfully established.")
 print("Generating Untrained Baseline Vector Field (Cell 6)...")
 
 # Pull a single sample batch from sequence data stream
-img1, img2, dem = next(iter(sequence_loader))
-img1 = img1.to(device)
-img2 = img2.to(device)
+images, dem = next(iter(sequence_loader))
+images = images.to(device)
 dem = dem.to(device)
 
 # Instantiate a temporary, clean model to capture the raw unoptimized state
@@ -117,10 +127,10 @@ untrained_model.eval()
 
 # Execute a forward pass without tracking gradients
 with torch.no_grad():
-    flow_pred, _ = untrained_model(img1, img2, dem, iters=4)
+    flow_pred, _ = untrained_model(images, dem, iters=4)
 
-# Render the baseline plot using modular evaluation package function
-plot_untrained_baseline(img1, flow_pred, title="Cell 6: Untrained Baseline Flow Map (Random Initial State)", stride=16)
+# Render the baseline plot using the first frame from the temporal sequence
+plot_untrained_baseline(images[:, 0], flow_pred, title="Cell 6: Untrained Baseline Flow Map (Random Initial State)", stride=16)
 
 print("Cell 6 visualization baseline successfully restored.")
 
@@ -138,12 +148,12 @@ for epoch in range(1, epochs + 1):
     model.train()
     print(f"\n--- Starting Training Epoch {epoch}/{epochs} ---")
 
-    for batch_idx, (img1_t, img2_t, dem_t) in enumerate(sequence_loader):
-        img1_t, img2_t, dem_t = img1_t.to(device), img2_t.to(device), dem_t.to(device)
+    for batch_idx, (images_t, dem_t) in enumerate(sequence_loader):
+        images_t, dem_t = images_t.to(device), dem_t.to(device)
 
         optimizer.zero_grad()
-        flow_pred_t, height_pred_t = model(img1_t, img2_t, dem_t, iters=4)
-        total_loss, data_loss, physics_loss = criterion(flow_pred_t, height_pred_t, img1_t, img2_t)
+        flow_pred_t, height_pred_t = model(images_t, dem_t, iters=4)
+        total_loss, data_loss, physics_loss = criterion(flow_pred_t, height_pred_t, images_t)
 
         total_loss.backward()
         optimizer.step()
@@ -162,11 +172,11 @@ for epoch in range(1, epochs + 1):
 
     print(f"\n--- Running Validation Eval for Epoch {epoch} ---")
     with torch.no_grad():
-        for img1_v, img2_v, dem_v in val_loader:
-            img1_v, img2_v, dem_v = img1_v.to(device), img2_v.to(device), dem_v.to(device)
+        for images_v, dem_v in val_loader:
+            images_v, dem_v = images_v.to(device), dem_v.to(device)
 
-            flow_pred_v, height_pred_v = model(img1_v, img2_v, dem_v, iters=4)
-            v_total, v_data, v_physics = criterion(flow_pred_v, height_pred_v, img1_v, img2_v)
+            flow_pred_v, height_pred_v = model(images_v, dem_v, iters=4)
+            v_total, v_data, v_physics = criterion(flow_pred_v, height_pred_v, images_v)
 
             val_total += v_total.item()
             val_data += v_data.item()
@@ -194,22 +204,21 @@ print("Executing Milestone 4: Inference Iteration Scaling Analysis...")
 
 # Grab a fresh test sequence frame from the validation datastream
 model.eval()
-img1_val, img2_val, dem_val = next(iter(val_loader))
-img1_val = img1_val.to(device)
-img2_val = img2_val.to(device)
+images_val, dem_val = next(iter(val_loader))
+images_val = images_val.to(device)
 dem_val = dem_val.to(device)
 
 # Compute inference at standard training depth (iters=4)
 with torch.no_grad():
-    flow_low_res, _ = model(img1_val, img2_val, dem_val, iters=4)
+    flow_low_res, _ = model(images_val, dem_val, iters=4)
 
 # Compute inference at scaled production depth (iters=12)
 with torch.no_grad():
-    flow_high_res, height_pred_val = model(img1_val, img2_val, dem_val, iters=12)
+    flow_high_res, height_pred_val = model(images_val, dem_val, iters=12)
 
-# Plot scaling comparison using modular evaluation package function
+# Plot scaling comparison using the first frame from the sequence as reference
 plot_inference_scaling_comparison(
-    img1_val, flow_low_res, flow_high_res,
+    images_val[:, 0], flow_low_res, flow_high_res,
     standard_iters=4, production_iters=12,
     scale_factor=0.1, stride=16
 )

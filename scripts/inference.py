@@ -27,7 +27,8 @@ def run_inference(config_path):
             band=cfg['dataset']['band'],
             year=cfg['dataset']['year'],
             day_of_year=cfg['dataset']['day_of_year'],
-            hour=h
+            hour=h,
+            sequence_length=cfg['dataset'].get('sequence_length', 2)
         )
         for h in cfg['dataset']['val_hours']
     ]
@@ -53,27 +54,32 @@ def run_inference(config_path):
     model.eval()
 
     # Get a fresh sample batch from the validation datastream
-    img1, img2, dem = next(iter(val_loader))
-    img1, img2, dem = img1.to(device), img2.to(device), dem.to(device)
+    images, dem = next(iter(val_loader))
+    images, dem = images.to(device), dem.to(device)
 
     # 1. Compute inference at standard training depth (iters=4)
     standard_iters = cfg['inference']['standard_iters']
     print(f"Running standard inference depth (iters={standard_iters})...")
     with torch.no_grad():
-        flow_low_res, _ = model(img1, img2, dem, iters=standard_iters)
+        flow_low_res, _ = model(images, dem, iters=standard_iters)
 
     # 2. Compute inference at scaled production depth (iters=12)
     production_iters = cfg['inference']['production_iters']
     print(f"Running scaled production inference depth (iters={production_iters})...")
     with torch.no_grad():
-        flow_high_res, height_pred = model(img1, img2, dem, iters=production_iters)
+        flow_high_res, height_pred = model(images, dem, iters=production_iters)
+
+    # Average adjacent-pair flows into a final single exported flow field
+    flow_low_res = flow_low_res.mean(dim=1)
+    flow_high_res = flow_high_res.mean(dim=1)
+    height_pred = height_pred.mean(dim=1)
 
     # 3. Visualize comparisons if enabled
     if cfg['inference']['visualize']:
         print("Rendering iteration scaling comparison...")
         settings = cfg['inference']['visualization_settings']
         plot_inference_scaling_comparison(
-            img1,
+            images[:, 0],
             flow_low_res,
             flow_high_res,
             standard_iters=standard_iters,

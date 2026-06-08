@@ -61,7 +61,8 @@ def run_training(config_path):
             band=cfg['dataset']['band'],
             year=cfg['dataset']['year'],
             day_of_year=cfg['dataset']['day_of_year'],
-            hour=h
+            hour=h,
+            sequence_length=cfg['dataset'].get('sequence_length', 2)
         )
         for h in cfg['dataset']['train_hours']
     ]
@@ -81,7 +82,8 @@ def run_training(config_path):
             band=cfg['dataset']['band'],
             year=cfg['dataset']['year'],
             day_of_year=cfg['dataset']['day_of_year'],
-            hour=h
+            hour=h,
+            sequence_length=cfg['dataset'].get('sequence_length', 2)
         )
         for h in cfg['dataset']['val_hours']
     ]
@@ -113,12 +115,12 @@ def run_training(config_path):
         model.train()
         print(f"\n--- Starting Training Epoch {epoch}/{epochs} ---")
 
-        for batch_idx, (img1, img2, dem) in enumerate(sequence_loader):
-            img1, img2, dem = img1.to(device), img2.to(device), dem.to(device)
+        for batch_idx, (images, dem) in enumerate(sequence_loader):
+            images, dem = images.to(device), dem.to(device)
 
             optimizer.zero_grad()
-            flow_pred, height_pred = model(img1, img2, dem, iters=cfg['model']['train_iters'])
-            total_loss, data_loss, physics_loss = criterion(flow_pred, height_pred, img1, img2)
+            flow_pred, height_pred = model(images, dem, iters=cfg['model']['train_iters'])
+            total_loss, data_loss, physics_loss = criterion(flow_pred, height_pred, images)
 
             total_loss.backward()
             optimizer.step()
@@ -137,11 +139,11 @@ def run_training(config_path):
 
         print(f"\n--- Running Validation Eval for Epoch {epoch} ---")
         with torch.no_grad():
-            for img1_v, img2_v, dem_v in val_loader:
-                img1_v, img2_v, dem_v = img1_v.to(device), img2_v.to(device), dem_v.to(device)
+            for images_v, dem_v in val_loader:
+                images_v, dem_v = images_v.to(device), dem_v.to(device)
 
-                flow_pred_v, height_pred_v = model(img1_v, img2_v, dem_v, iters=cfg['model']['train_iters'])
-                v_total, v_data, v_physics = criterion(flow_pred_v, height_pred_v, img1_v, img2_v)
+                flow_pred_v, height_pred_v = model(images_v, dem_v, iters=cfg['model']['train_iters'])
+                v_total, v_data, v_physics = criterion(flow_pred_v, height_pred_v, images_v)
 
                 val_total += v_total.item()
                 val_data += v_data.item()

@@ -7,20 +7,20 @@ This document defines the strict API contracts, expected tensor dimensions, data
 ## 1. Datasets Module (`datasets/`)
 
 ### GOES16ProxyDataset (`datasets/goes16_loader.py`)
-*   **Purpose**: Fetches netCDF4 data from NOAA's public S3 bucket, crops a 512x512 matrix, handles NaNs, and yields frame pairs.
+*   **Purpose**: Fetches netCDF4 data from NOAA's public S3 bucket, crops a 512x512 matrix, handles NaNs, and yields temporal frame sequences.
 *   **API Signature**:
     ```python
-    GOES16ProxyDataset(product='ABI-L2-CMIPC', band='C09', year=2025, day_of_year=150, hour=14)
+    GOES16ProxyDataset(product='ABI-L2-CMIPC', band='C09', year=2025, day_of_year=150, hour=14, sequence_length=4)
     ```
 *   **Output shapes (from `__getitem__`)**:
-    *   `frame_t`: `[1, 512, 512]` (dtype: `torch.float32`)
-    *   `frame_t_next`: `[1, 512, 512]` (dtype: `torch.float32`)
+    *   `frames`: `[T, 1, 512, 512]` (dtype: `torch.float32`)
     *   `mock_dem`: `[1, 512, 512]` (dtype: `torch.float32`)
 *   **Invariants**:
-    *   The output spatial dimensions ($H=512$, $W=512$) are hardcoded and must be identical across all three returned tensors.
+    *   The output spatial dimensions ($H=512$, $W=512$) are hardcoded and must be identical across the frame stack and DEM.
     *   The pixel count values must be non-NaN (NaNs replaced with `0.0`).
 *   **Common Mistakes**:
     *   Loading bands with different base spatial resolutions (e.g. VIS bands at 0.5km vs IR bands at 2km) without spatial grid resampling.
+    *   Treating the dataset output as a 2-tuple of frames instead of a temporal stack.
 
 ### INSAT3DSProxyDataset (`datasets/insat3ds_loader.py`)
 *   **Purpose**: Placeholder interface for INSAT-3DS HDF5 data loading, calibration, and geolocation.
@@ -36,43 +36,41 @@ This document defines the strict API contracts, expected tensor dimensions, data
 ## 2. Models Module (`models/`)
 
 ### PhysicsInformedRAFT (`models/pi_raft.py`)
-*   **Purpose**: Computes optical flow and pressure vertical coordinates from two sequential frames.
+*   **Purpose**: Computes optical flow and pressure vertical coordinates from a temporal image sequence.
 *   **API Signature**:
     ```python
     model = PhysicsInformedRAFT(hidden_dim=128, corr_radius=3)
-    flow, height = model(image1, image2, dem, iters=4)
+    flow, height = model(images, dem, iters=4)
     ```
 *   **Input Shapes**:
-    *   `image1`: `[B, 1, H, W]` (dtype: `torch.float32`)
-    *   `image2`: `[B, 1, H, W]` (dtype: `torch.float32`)
+    *   `images`: `[B, T, 1, H, W]` (dtype: `torch.float32`)
     *   `dem`: `[B, 1, H, W]` (dtype: `torch.float32`)
 *   **Output Shapes**:
-    *   `final_flow`: `[B, 2, H, W]` (dtype: `torch.float32`) - containing zonal `u` and meridional `v` velocities.
-    *   `final_height`: `[B, 1, H, W]` (dtype: `torch.float32`) - containing cloud-top pressure in hPa.
+    *   `flow`: `[B, T-1, 2, H, W]` (dtype: `torch.float32`) - containing zonal `u` and meridional `v` velocities for each adjacent pair.
+    *   `height`: `[B, T-1, 1, H, W]` (dtype: `torch.float32`) - containing per-pair cloud-top pressure in hPa.
 *   **Invariants**:
     *   Input dimensions $H$ and $W$ must be multiples of 8 (due to the $1/8$ spatial downsampling tier).
-    *   `final_flow` and `final_height` outputs are bilinearly upsampled to match input $H$ and $W$ exactly.
+    *   Output tensors are bilinearly upsampled to match input $H$ and $W$ exactly for each time-pair output.
 *   **Common Mistakes**:
-    *   Mismatch of hardware devices between inputs (e.g., placing `dem` on CPU while `image1` is on GPU).
-    *   Altering the convolutional layers of `PressureHead` without accounting for state_dict parameter names (`height_head.weight`, `height_head.bias`).
+    *   Passing a pair of images instead of a temporal stack.
+    *   Mismatch of hardware devices between inputs (e.g., placing `dem` on CPU while `images` are on GPU).
 
 ---
 
 ## 3. Losses Module (`losses/`)
 
 ### PhysicsInformedLoss (`losses/physics_loss.py`)
-*   **Purpose**: Computes multi-constraint fluid dynamics losses using differentiable warping.
+*   **Purpose**: Computes multi-constraint fluid dynamics losses using differentiable warping over a temporal image sequence.
 *   **API Signature**:
     ```python
     criterion = PhysicsInformedLoss(alpha=0.5, beta=0.1, gamma=0.01, epsilon=0.001)
-    total_loss, data_loss, physics_loss = criterion(flow_pred, height_pred, img1, img2, background_flow=None)
+    total_loss, data_loss, physics_loss = criterion(flow_pred, height_pred, img_sequence, background_flow=None)
     ```
 *   **Input Shapes**:
-    *   `flow_pred`: `[B, 2, H, W]` (dtype: `torch.float32`)
-    *   `height_pred`: `[B, 1, H, W]` (dtype: `torch.float32`)
-    *   `img1`: `[B, 1, H, W]` (dtype: `torch.float32`)
-    *   `img2`: `[B, 1, H, W]` (dtype: `torch.float32`)
-    *   `background_flow`: `[B, 2, H, W]` (dtype: `torch.float32`, optional)
+    *   `flow_pred`: `[B, T-1, 2, H, W]` (dtype: `torch.float32`)
+    *   `height_pred`: `[B, T-1, 1, H, W]` (dtype: `torch.float32`)
+    *   `img_sequence`: `[B, T, 1, H, W]` (dtype: `torch.float32`)
+    *   `background_flow`: `[B, T-1, 2, H, W]` (dtype: `torch.float32`, optional)
 *   **Output Shapes**:
     *   `total_loss`: `[]` or `[1]` (scalar, dtype: `torch.float32`)
     *   `data_loss`: `[]` or `[1]` (scalar, dtype: `torch.float32`)

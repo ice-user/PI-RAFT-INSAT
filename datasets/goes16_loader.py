@@ -9,14 +9,15 @@ from torch.utils.data import Dataset
 
 class GOES16ProxyDataset(Dataset):
     """
-    Streams consecutive frame pairs directly from NOAA's public GOES-16 S3 bucket.
+    Streams consecutive frame sequences from NOAA's public GOES-16 S3 bucket.
     Product: 'ABI-L2-CMIPC' (Cloud & Moisture Imagery - CONUS standard projection)
     Bands: 'C09' (6.9um Mid-Level Water Vapor) or 'C14' (11.2um Longwave Thermal IR)
     """
-    def __init__(self, product='ABI-L2-CMIPC', band='C09', year=2025, day_of_year=150, hour=14):
+    def __init__(self, product='ABI-L2-CMIPC', band='C09', year=2025, day_of_year=150, hour=14, sequence_length=2):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.band = band
+        self.sequence_length = sequence_length
 
         # Configure anonymous public access to bypass mandatory AWS credential steps
         self.s3 = boto3.client('s3', region_name='us-east-1',
@@ -52,14 +53,16 @@ class GOES16ProxyDataset(Dataset):
         return torch.from_numpy(data_matrix).unsqueeze(0) # Shape: [1, H, W]
 
     def __len__(self):
-        return max(0, len(self.file_list) - 1)
+        return max(0, len(self.file_list) - self.sequence_length + 1)
 
     def __getitem__(self, idx):
-        frame_t = self._download_and_parse(self.file_list[idx])
-        frame_t_next = self._download_and_parse(self.file_list[idx + 1])
+        frames = [
+            self._download_and_parse(self.file_list[idx + i])
+            for i in range(self.sequence_length)
+        ]
 
         # Terrain Context layer (DEM mapping simulation) matching image geometry
-        _, h, w = frame_t.shape
+        _, h, w = frames[0].shape
         mock_dem = torch.zeros((1, h, w), dtype=torch.float32)
 
-        return frame_t, frame_t_next, mock_dem
+        return torch.stack(frames, dim=0), mock_dem

@@ -56,49 +56,63 @@ class PhysicsInformedLoss(nn.Module):
         """Wraps mathematical tracking outliers with the Charbonnier threshold formula."""
         return torch.sqrt(residual_tensor ** 2 + self.epsilon ** 2)
 
-    def forward(self, flow_pred, height_pred, img1, img2, background_flow=None):
+    def forward(self, flow_pred, height_pred, img_sequence, background_flow=None):
         """
-        Evaluates fluid transport parameters against consecutive multi-spectral images.
+        Evaluates fluid transport parameters against a temporal image sequence.
+
+        Args:
+            flow_pred (torch.Tensor): [B, T-1, 2, H, W]
+            height_pred (torch.Tensor): [B, T-1, 1, H, W]
+            img_sequence (torch.Tensor): [B, T, C, H, W]
         """
         # TODO: scientific validation required
-        # Note: height_pred (cloud-top pressure prediction) is currently completely ignored in the loss formulation,
-        # meaning the height prediction head is untrained. This will be addressed in a future scientific update.
-        
-        # 1. Warp source tracking field back to baseline frame reference
-        img2_warped = self.warp(img2, flow_pred)
+        # Note: height_pred is currently ignored in the loss formulation.
 
-        # 2. Brightness Constancy Loss (BC)
-        bc_residual = img2_warped - img1
-        loss_bc = torch.mean(self.apply_charbonnier(bc_residual))
+        total_loss = 0.0
+        total_data_loss = 0.0
+        total_smoothness_loss = 0.0
 
-        # 3. Constancy Gradient Loss (GC)
-        img1_dx, img1_dy = self.compute_spatial_gradients(img1)
-        warped_dx, warped_dy = self.compute_spatial_gradients(img2_warped)
-        gc_residual_x = warped_dx - img1_dx
-        gc_residual_y = warped_dy - img1_dy
-        loss_gc = torch.mean(self.apply_charbonnier(gc_residual_x) + self.apply_charbonnier(gc_residual_y))
+        for t in range(img_sequence.shape[1] - 1):
+            img1 = img_sequence[:, t]
+            img2 = img_sequence[:, t + 1]
+            flow = flow_pred[:, t]
 
-        # 4. Fluid Smoothness Loss (SC)
-        u_channel, v_channel = flow_pred[:, 0:1, :, :], flow_pred[:, 1:2, :, :]
-        u_dx, u_dy = self.compute_spatial_gradients(u_channel)
-        v_dx, v_dy = self.compute_spatial_gradients(v_channel)
-        loss_sc = torch.mean(
-            self.apply_charbonnier(u_dx) + self.apply_charbonnier(u_dy) +
-            self.apply_charbonnier(v_dx) + self.apply_charbonnier(v_dy)
-        )
+            # 1. Brightness Constancy: warp the later frame back to the reference frame
+            img2_warped = self.warp(img2, flow)
+            bc_residual = img2_warped - img1
+            loss_bc = torch.mean(self.apply_charbonnier(bc_residual))
 
-        # 5. Hinting Background Loss (E_W)
-        if background_flow is not None:
-            bg_residual = flow_pred - background_flow
-            loss_ew = torch.mean(self.apply_charbonnier(bg_residual))
-        else:
-            loss_ew = torch.tensor(0.0, device=flow_pred.device)
+            # 2. Spatial Gradient Constancy: compare image gradients after warping
+            img1_dx, img1_dy = self.compute_spatial_gradients(img1)
+            warped_dx, warped_dy = self.compute_spatial_gradients(img2_warped)
+            gc_residual_x = warped_dx - img1_dx
+            gc_residual_y = warped_dy - img1_dy
+            loss_gc = torch.mean(self.apply_charbonnier(gc_residual_x) + self.apply_charbonnier(gc_residual_y))
 
-        # 6. System Aggregation using Hyperparameter Coefficients
-        total_loss = loss_bc + (self.beta * loss_gc) + (self.alpha * loss_sc) + (self.gamma * loss_ew)
+            # 3. Fluid Smoothness Regularization: penalize abrupt flow changes
+            u_channel, v_channel = flow[:, 0:1, :, :], flow[:, 1:2, :, :]
+            u_dx, u_dy = self.compute_spatial_gradients(u_channel)
+            v_dx, v_dy = self.compute_spatial_gradients(v_channel)
+            loss_sc = torch.mean(
+                self.apply_charbonnier(u_dx) + self.apply_charbonnier(u_dy) +
+                self.apply_charbonnier(v_dx) + self.apply_charbonnier(v_dy)
+            )
 
-        # Isolate visual tracking data metrics from fluid physics metrics for the console dashboard
-        data_tracking_metric = loss_bc + (self.beta * loss_gc)
-        fluid_smoothness_metric = loss_sc
+            # 4. Optional background guidance loss on predicted flow
+            if background_flow is not None:
+                bg_residual = flow - background_flow[:, t]
+                loss_ew = torch.mean(self.apply_charbonnier(bg_residual))
+            else:
+                loss_ew = torch.tensor(0.0, device=flow_pred.device)
+
+            step_loss = loss_bc + (self.beta * loss_gc) + (self.alpha * loss_sc) + (self.gamma * loss_ew)
+            total_loss += step_loss
+            total_data_loss += loss_bc + (self.beta * loss_gc)
+            total_smoothness_loss += loss_sc
+
+        num_pairs = img_sequence.shape[1] - 1
+        total_loss = total_loss / num_pairs
+        data_tracking_metric = total_data_loss / num_pairs
+        fluid_smoothness_metric = total_smoothness_loss / num_pairs
 
         return total_loss, data_tracking_metric, fluid_smoothness_metric

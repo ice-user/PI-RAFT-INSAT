@@ -7,6 +7,7 @@ dataset:
   year: 2024
   day_of_year: 120
   val_hours: [18]
+  sequence_length: 4
   crop_size: 512
   batch_size: 1
 

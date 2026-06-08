@@ -80,20 +80,19 @@ def test_full_model_equivalence():
     mod_model.eval()
     
     # Inputs
-    img1 = torch.randn(1, 1, 512, 512)
-    img2 = torch.randn(1, 1, 512, 512)
+    images = torch.randn(1, 4, 1, 512, 512)
     dem = torch.zeros(1, 1, 512, 512)
     
     # Compute forward pass (with zero seed to ensure random correlation lookup is identical if run on same device state)
     torch.manual_seed(100)
     with torch.no_grad():
-        flow_o, height_o = orig_model(img1, img2, dem, iters=4)
+        flow_o, height_o = orig_model(images, dem, iters=4)
         
     torch.manual_seed(100)
     with torch.no_grad():
-        flow_m, height_m = mod_model(img1, img2, dem, iters=4)
+        flow_m, height_m = mod_model(images, dem, iters=4)
         
-    assert flow_o.shape == flow_m.shape == (1, 2, 512, 512)
-    assert height_o.shape == height_m.shape == (1, 1, 512, 512)
+    assert flow_o.shape == flow_m.shape == (1, 3, 2, 512, 512)
+    assert height_o.shape == height_m.shape == (1, 3, 1, 512, 512)
     assert torch.allclose(flow_o, flow_m), "Flow predictions mismatch."
     assert torch.allclose(height_o, height_m), "Height predictions mismatch."

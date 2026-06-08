@@ -12,7 +12,11 @@ def _prepare_flow_for_visualization(flow_pred):
         flow_np = np.asarray(flow_pred)
 
     # Remove a leading batch dimension if present
-    if flow_np.ndim == 5 and flow_np.shape[0] == 1:
+    if flow_np.ndim == 5:
+        flow_np = flow_np[0]
+
+    # Remove singleton batch dimension for a standard flow field [1, 2, H, W]
+    if flow_np.ndim == 4 and flow_np.shape[0] == 1 and flow_np.shape[1] == 2:
         flow_np = flow_np[0]
 
     # If the model returns a sequence of adjacent-pair flows [T-1, 2, H, W], average them

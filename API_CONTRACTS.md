@@ -13,8 +13,11 @@ This document defines the strict API contracts, expected tensor dimensions, data
     GOES16ProxyDataset(product='ABI-L2-CMIPC', band='C09', year=2025, day_of_year=150, hour=14, sequence_length=4)
     ```
 *   **Output shapes (from `__getitem__`)**:
-    *   `frames`: `[T, 1, 512, 512]` (dtype: `torch.float32`)
+    *   `frames`: `[T, 1, 512, 512]` with `T=4` in the current 4-frame contract (dtype: `torch.float32`)
     *   `mock_dem`: `[1, 512, 512]` (dtype: `torch.float32`)
+*   **Invariants**:
+    *   The contract currently requires exactly 4 temporal frames per sample, so `sequence_length=4` must be passed into the dataset constructor.
+    *   The output spatial dimensions ($H=512$, $W=512$) are hardcoded and must be identical across the frame stack and DEM.
 *   **Invariants**:
     *   The output spatial dimensions ($H=512$, $W=512$) are hardcoded and must be identical across the frame stack and DEM.
     *   The pixel count values must be non-NaN (NaNs replaced with `0.0`).
@@ -43,11 +46,14 @@ This document defines the strict API contracts, expected tensor dimensions, data
     flow, height = model(images, dem, iters=4)
     ```
 *   **Input Shapes**:
-    *   `images`: `[B, T, 1, H, W]` (dtype: `torch.float32`)
+    *   `images`: `[B, T, 1, H, W]` with `T=4` for the current 4-frame contract (dtype: `torch.float32`)
     *   `dem`: `[B, 1, H, W]` (dtype: `torch.float32`)
 *   **Output Shapes**:
-    *   `flow`: `[B, T-1, 2, H, W]` (dtype: `torch.float32`) - containing zonal `u` and meridional `v` velocities for each adjacent pair.
-    *   `height`: `[B, T-1, 1, H, W]` (dtype: `torch.float32`) - containing per-pair cloud-top pressure in hPa.
+    *   `flow`: `[B, T-1, 2, H, W]` with `T-1=3` for 4 input frames (dtype: `torch.float32`) - containing zonal `u` and meridional `v` velocities for each adjacent pair.
+    *   `height`: `[B, T-1, 1, H, W]` with `T-1=3` for 4 input frames (dtype: `torch.float32`) - containing per-pair cloud-top pressure in hPa.
+*   **Behavior**:
+    *   Each output time-slice in `flow` corresponds to the motion field between consecutive input frames: frame1→frame2, frame2→frame3, frame3→frame4.
+    *   The model therefore accepts four-image sequences and returns three pairwise flow estimates.
 *   **Invariants**:
     *   Input dimensions $H$ and $W$ must be multiples of 8 (due to the $1/8$ spatial downsampling tier).
     *   Output tensors are bilinearly upsampled to match input $H$ and $W$ exactly for each time-pair output.
@@ -101,9 +107,19 @@ This document defines the strict API contracts, expected tensor dimensions, data
 
 ---
 
-## 5. Target 4-Frame Contracts (Future Design)
+## 5. Supported 4-Frame Contracts
 
-For the planned 4-frame temporal sequence tracking:
-*   **Model Input Tensor**: `[B, T, C, H, W]` where $T=4$.
-*   **Model Flow Output**: `[B, T-1, 2, H, W]`.
-*   **Invariants**: The temporal cadence ($\Delta t$) must be kept uniform across the sequence to ensure correct velocity derivatives.
+The repository now supports the 4-frame temporal sequence contract in both dataset and model APIs.
+*   **Model Input Tensor**: `images` should be `[B, T, C, H, W]` with `T=4`, `C=1`.
+*   **Model DEM Input**: `dem` is `[B, 1, H, W]`.
+*   **Model Flow Output**: `flow` is `[B, T-1, 2, H, W]` with `T-1=3` for 4 input frames.
+*   **Model Height Output**: `height` is `[B, T-1, 1, H, W]` with `T-1=3`.
+*   **Output semantics**:
+    *   `flow[:, 0]` = motion from frame1 → frame2
+    *   `flow[:, 1]` = motion from frame2 → frame3
+    *   `flow[:, 2]` = motion from frame3 → frame4
+*   **Invariants**:
+    *   Input sequence length must equal 4 for the current contract.
+    *   The temporal cadence (`Δt`) across the 4 frames must be uniform.
+    *   The output contains three per-pair flow fields, not a single image-to-image flow.
+*   **Visualization note**: For single-field plotting, average the pairwise outputs with `flow.mean(dim=1)` to produce a `[B, 2, H, W]` field.
